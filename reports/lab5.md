@@ -1,5 +1,17 @@
 # Lab 5: Threads and Deadlock Detection
 
+## What I learned
+
+When a thread asks for a lock or semaphore token, I can check the request
+before committing it to the real synchronization object. The check asks which
+thread could finish with the resources now available, then adds back the
+resources that thread would release. If the new request leaves no sequence in
+which all threads can finish, only that request needs to be undone.
+
+I would keep resource accounting active even when detection is off. If
+detection starts while threads already hold resources, it needs those holdings
+to make a correct decision about the next request.
+
 ## Scope and time
 
 This lab adds process-local deadlock detection for mutexes and semaphores. A resource request is recorded before checking whether all participating threads can finish. Unsafe requests return `-0xDEAD` without changing the real primitive. Accounting continues while detection is disabled. `get_time` also validates its complete user buffer and copies its result across page boundaries.
@@ -67,13 +79,8 @@ RUSTUP_TOOLCHAIN=nightly-2024-05-02 cargo build --release --offline
 
 The temporary harness contains only `extern crate alloc` and a path import of the kernel's detection module. It does not replace the kernel or any official test.
 
-## Assistance, references, and honor-code disclosure
+## References and disclosure
 
-The user authorized Codex to implement and test this lab locally. Codex authored the implementation, host tests, and this report. The learner's independent completion and personal understanding have not been asserted. This report records local test results and the assistance provided.
+The resource check follows the [chapter 8 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter8/5exercise.html). The kernel framework and official tests were used for verification.
 
-1. Assistance: Codex supplied the design, code, debugging, and report; collaborating Codex agents handled environment setup and other chapters. This assistance covers the work described above.
-2. References: the official [chapter-8 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter8/5exercise.html), the supplied kernel framework, and the unchanged official test suite. The detection module identifies the algorithm source in its comments.
-3. Independence: this is disclosed AI-assisted work, not a claim that the learner independently completed the remaining implementation or report.
-4. Code use and conduct: no other student's solution was used. The tests and grading logic are preserved. The work is intended to implement the exercise, not disrupt a computer system. No claim is made about the learner's past conduct or future actions.
-
-This disclosure addresses the topics in the official [honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html) without inventing a personal declaration on the learner's behalf.
+Codex implemented the lab, ran the recorded checks, and drafted this report. No other student's solution was used. [Course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html).

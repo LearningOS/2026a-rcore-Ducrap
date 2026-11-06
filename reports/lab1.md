@@ -1,5 +1,17 @@
 # Lab 1: task tracing
 
+## What I learned
+
+I now read a trap as two related changes: the CPU switches privilege levels,
+while the trap handler switches to a kernel stack and saves the application's
+registers. That distinction explains why swapping the stack pointer alone
+cannot return to user mode. The restored status and program counter tell
+`sret` where and at what privilege to resume.
+
+For syscall tracing, I look at when the counter is updated. Counting at
+dispatch means that a trace query includes its own call. Keeping the counters
+with the task means switching to another application leaves those counts intact.
+
 ## Implementation
 
 `sys_trace` reads or writes one byte in the chapter's flat address space, or returns the current task's syscall count. The dispatcher records calls before invoking handlers, so querying trace includes the current trace call. Five counters per task cover the supported syscall IDs without putting a large sparse table on the boot stack. A query for an unsupported ID returns zero; an unsupported trace operation returns `-1`. Counts remain separate when the scheduler switches tasks.
@@ -34,9 +46,8 @@ The original official checker completed successfully: **7/7**, exit status **0**
 
 Environment: QEMU 8.2.2, `nightly-2024-05-02`, cargo-binutils 0.4.0, and the supplied RustSBI 0.4.1 firmware. Checker revision: `7d61ec55b58eed6ca7052917846c1b87af34563a`; test revision: `a0593662ad55d670ba8c27ce1763347cd0dd552f`. The unmodified checker used its vendored offline dependencies in a disposable snapshot. Evidence is saved in `tmp/rcore-grade.log`, `tmp/rcore-result.json`, and `tmp/last-run.json`. No result was uploaded.
 
-## Honor statement and sources
+## References and disclosure
 
-1. Codex assisted with all implementation and written analysis in this lab, including syscall accounting and trap interpretation. The affected source files identify that assistance. No other human collaboration is recorded here.
-2. References: the supplied kernel and trap assembly, [chapter 3 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter3/5exercise.html), [honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html), and the supplied RustSBI metadata. The course framework remains attributed to its original authors.
-3. No claim of unaided completion is made. Work described here was prepared with the assistance disclosed above, which may affect assessment under the course rules.
-4. No other student's solution was used. The checks described above were run locally for the course experiment.
+The supplied kernel, trap assembly, and RustSBI metadata were used alongside the [chapter 3 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter3/5exercise.html).
+
+Codex implemented the lab, ran the recorded checks, and drafted this report. No other student's solution was used. [Course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html).

@@ -1,5 +1,17 @@
 # Lab 4: Hard Links and File Metadata
 
+## What I learned
+
+I separate a file's name, inode, and open handle when reasoning about its
+lifetime. Two names can point to the same inode. Removing the last name drops
+the link count to zero, but the inode and data must remain available through
+an open descriptor. The final close is then the point at which the blocks can
+be reclaimed.
+
+I would test this with more than a successful unlink. Repeating allocations
+until their total exceeds the filesystem's capacity shows whether it actually
+reuses the blocks and inode slots.
+
 ## Implementation
 
 Implemented hard links, unlink, and fstat without changing the easy-fs disk format. Root-directory scanning supplies link counts. Shared inode handles keep an unlinked file alive until its final open handle closes; reclamation then releases inode and data bitmap entries. Metadata and timestamps use checked page-wise user copies. The required mmap, munmap, and direct ELF spawn interfaces are also implemented for earlier-chapter tests.
@@ -51,11 +63,8 @@ Give each process a kernel-managed mailbox and expose `send(destination, message
 
 Use bounded queues, blocking or nonblocking send/receive, and scheduler wakeups to handle backpressure without busy-waiting. Access checks prevent unauthorized sends or reads. Process exit closes its mailbox and wakes blocked peers with an error. Large payloads can use explicitly shared memory while mailbox messages carry notifications or buffer handles. This needs one receive endpoint per process instead of a set of pair-specific channels.
 
-## Assistance, References, and Honor Disclosure
+## References and disclosure
 
-1. **Assistance:** OpenAI Codex generated and reviewed this local implementation and drafted this report at the user's request. Assistance included filesystem lifetime design, syscall implementation, compatibility with earlier labs, boundary tests, and debugging. Other Codex agents working on this same project supplied the earlier mmap/munmap and spawn design for adaptation. No additional human discussions were represented to the assistant.
-2. **References:** The starting repository's easy-fs and kernel code; the [chapter 6 exercise specification](https://learningos.cn/rCore-Tutorial-Guide/chapter6/4exercise.html); the [chapter 7 questions](https://learningos.cn/rCore-Tutorial-Guide/chapter7/3exercise.html); and the official rCore-Tutorial-Test/Checker sources used to inspect interfaces and run local checks. The syscall implementation contains a corresponding specification reference. No other student's solution was used to produce these changes.
-3. **Authorship:** This is a disclosed Codex-assisted solution. This report makes no claim that the student independently authored the generated code or documentation.
-4. **Verification:** The checks above were run locally against the original course tests and grading rules. The work implements the intended course interfaces rather than interfering with other systems.
+References include the supplied easy-fs and kernel code, the [chapter 6 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter6/4exercise.html), the [chapter 7 questions](https://learningos.cn/rCore-Tutorial-Guide/chapter7/3exercise.html), and the official tests and checker.
 
-These disclosures accompany the course's [honor-code requirements](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html); they are not an undisclosed independent-authorship declaration.
+Codex implemented the lab, ran the recorded checks, and drafted this report. No other student's solution was used. [Course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html).

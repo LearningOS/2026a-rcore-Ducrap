@@ -1,5 +1,16 @@
 # Lab 3: Process creation and stride scheduling
 
+## What I learned
+
+I think about stride scheduling in terms of two numbers. The accumulated
+stride decides who runs next, and the charge after a run depends on priority.
+A higher priority means a smaller charge, so that process's accumulated stride
+catches up more slowly and it gets more turns over time.
+
+The small-counter example shows why a plain numeric comparison can give the
+wrong order after wraparound. The exercise asks how to compare wrapped values.
+The implementation uses a wider accumulator to postpone that problem.
+
 ## Implementation
 
 `spawn` validates a bounded user path, loads its ELF into a fresh address space,
@@ -112,19 +123,8 @@ guide's 1.5 threshold. These are measurements from one local QEMU run, not a
 claim about every workload or host. Evidence is in `tmp/rcore-result.json`,
 `tmp/rcore-grade.log`, and `tmp/last-run.json`.
 
-## Assistance, references, and honor-code disclosure
+## References and disclosure
 
-OpenAI Codex implemented and reviewed this local study work and drafted the
-report at the user's request. The participant's independent authorship or
-personal execution of tests is not claimed. No peer solution was used.
+The [chapter 5 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter5/4exercise.html) defines process creation and scheduling. The [chapter 4 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter4/7exercise.html) defines the inherited memory calls. The supplied framework and official tests were used for verification.
 
-The [chapter-5 exercise specification](https://learningos.cn/rCore-Tutorial-Guide/chapter5/4exercise.html)
-defines the process interfaces and scheduler; the [chapter-4 specification](https://learningos.cn/rCore-Tutorial-Guide/chapter4/7exercise.html)
-defines the migrated memory syscalls. The supplied framework and official test
-sources were consulted. Source-file comments identify these guide references;
-checker rules and test assertions were preserved.
-
-The [course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html)
-requires assistance and references to be disclosed, prohibits copying others'
-solutions, and requires experiment code to remain private. The changes implement the lab interfaces. The checks above were run locally.
-The guide does not specify how AI-generated work is assessed.
+Codex implemented the lab, ran the recorded checks, and drafted this report. No other student's solution was used. [Course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html).

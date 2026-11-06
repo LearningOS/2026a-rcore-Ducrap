@@ -1,7 +1,83 @@
-//! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+/*
+ * Checked metadata copying and hard-link syscalls, implemented with Codex.
+ * Contract: https://learningos.cn/rCore-Tutorial-Guide/chapter6/4exercise.html
+ */
+use crate::config::PAGE_SIZE;
+use crate::fs::{link_file, open_file, unlink_file, OpenFlags, Stat};
+use crate::mm::{translated_byte_buffer, translated_str, PageTable, UserBuffer, VirtAddr};
 use crate::task::{current_task, current_user_token};
+use alloc::string::String;
+use alloc::vec::Vec;
+
+fn valid_user_range(token: usize, start: usize, len: usize, write: bool) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    // Only the lower canonical SV39 range contains process-owned user memory.
+    if start >= 1usize << 38 || end > 1usize << 38 {
+        return false;
+    }
+    let table = PageTable::from_token(token);
+    let mut address = start;
+    while address < end {
+        let Some(entry) = table.translate(VirtAddr::from(address).floor()) else {
+            return false;
+        };
+        let user_accessible = entry.bits & (1 << 4) != 0;
+        if !entry.is_valid()
+            || !user_accessible
+            || if write {
+                !entry.writable()
+            } else {
+                !entry.readable()
+            }
+        {
+            return false;
+        }
+        address = ((address / PAGE_SIZE + 1) * PAGE_SIZE).min(end);
+    }
+    true
+}
+
+/// Copy initialized bytes only after validating the entire writable user range.
+pub(super) fn copy_to_user(token: usize, destination: usize, bytes: &[u8]) -> bool {
+    if !valid_user_range(token, destination, bytes.len(), true) {
+        return false;
+    }
+    let table = PageTable::from_token(token);
+    let mut copied = 0;
+    while copied < bytes.len() {
+        let address = destination + copied;
+        let offset = address % PAGE_SIZE;
+        let count = (PAGE_SIZE - offset).min(bytes.len() - copied);
+        let page = table
+            .translate(VirtAddr::from(address).floor())
+            .unwrap()
+            .ppn();
+        page.get_bytes_array()[offset..offset + count]
+            .copy_from_slice(&bytes[copied..copied + count]);
+        copied += count;
+    }
+    true
+}
+
+pub(super) fn user_name(token: usize, name: *const u8) -> Option<String> {
+    let table = PageTable::from_token(token);
+    let mut bytes = Vec::new();
+    for offset in 0..=27 {
+        let address = (name as usize).checked_add(offset)?;
+        if !valid_user_range(token, address, 1, false) {
+            return None;
+        }
+        let page = table.translate(VirtAddr::from(address).floor())?.ppn();
+        let byte = page.get_bytes_array()[address % PAGE_SIZE];
+        if byte == 0 {
+            return String::from_utf8(bytes).ok();
+        }
+        bytes.push(byte);
+    }
+    None
+}
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
@@ -75,29 +151,57 @@ pub fn sys_close(fd: usize) -> isize {
     0
 }
 
-/// YOUR JOB: Implement fstat.
-pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Return a snapshot of the file's inode metadata.
+pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    let Some(Some(file)) = inner.fd_table.get(fd) else {
+        return -1;
+    };
+    let file = file.clone();
+    let token = inner.memory_set.token();
+    drop(inner);
+    let Some(stat) = file.stat() else {
+        return -1;
+    };
+    // Serialize fields explicitly so no uninitialized Rust padding reaches userspace.
+    let mut bytes = [0u8; core::mem::size_of::<Stat>()];
+    bytes[..8].copy_from_slice(&stat.dev.to_ne_bytes());
+    bytes[8..16].copy_from_slice(&stat.ino.to_ne_bytes());
+    bytes[16..20].copy_from_slice(&stat.mode.bits().to_ne_bytes());
+    bytes[20..24].copy_from_slice(&stat.nlink.to_ne_bytes());
+    if copy_to_user(token, st as usize, &bytes) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement linkat.
-pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Add a second root-directory name for an existing file.
+pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
+    let token = current_user_token();
+    let Some(old_name) = user_name(token, old_name) else {
+        return -1;
+    };
+    let Some(new_name) = user_name(token, new_name) else {
+        return -1;
+    };
+    if link_file(&old_name, &new_name) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement unlinkat.
-pub fn sys_unlinkat(_name: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Remove a name while retaining any open file handles.
+pub fn sys_unlinkat(name: *const u8) -> isize {
+    let token = current_user_token();
+    let Some(name) = user_name(token, name) else {
+        return -1;
+    };
+    if unlink_file(&name) {
+        0
+    } else {
+        -1
+    }
 }

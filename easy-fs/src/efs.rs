@@ -1,9 +1,11 @@
+/* Inode lifetimes defer reclamation until the last open handle is dropped. */
 use super::{
     block_cache_sync_all, get_block_cache, Bitmap, BlockDevice, DiskInode, DiskInodeType, Inode,
     SuperBlock,
 };
 use crate::BLOCK_SZ;
-use alloc::sync::Arc;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 ///An easy file system on block
 pub struct EasyFileSystem {
@@ -15,6 +17,8 @@ pub struct EasyFileSystem {
     pub data_bitmap: Bitmap,
     inode_area_start_block: u32,
     data_area_start_block: u32,
+    pub(crate) inode_handles: BTreeMap<u32, Weak<Inode>>,
+    pub(crate) unlinked_inodes: BTreeSet<u32>,
 }
 
 type DataBlock = [u8; BLOCK_SZ];
@@ -45,6 +49,8 @@ impl EasyFileSystem {
             data_bitmap,
             inode_area_start_block: 1 + inode_bitmap_blocks,
             data_area_start_block: 1 + inode_total_blocks + data_bitmap_blocks,
+            inode_handles: BTreeMap::new(),
+            unlinked_inodes: BTreeSet::new(),
         };
         // clear all blocks
         for i in 0..total_blocks {
@@ -99,6 +105,8 @@ impl EasyFileSystem {
                     ),
                     inode_area_start_block: 1 + super_block.inode_bitmap_blocks,
                     data_area_start_block: 1 + inode_total_blocks + super_block.data_bitmap_blocks,
+                    inode_handles: BTreeMap::new(),
+                    unlinked_inodes: BTreeSet::new(),
                 };
                 Arc::new(Mutex::new(efs))
             })
@@ -121,6 +129,12 @@ impl EasyFileSystem {
             (inode_id % inodes_per_block) as usize * inode_size,
         )
     }
+    /// Recover an inode number from its position in the inode area.
+    pub(crate) fn inode_id(&self, block_id: usize, block_offset: usize) -> u32 {
+        let inode_size = core::mem::size_of::<DiskInode>();
+        ((block_id - self.inode_area_start_block as usize) * (BLOCK_SZ / inode_size)
+            + block_offset / inode_size) as u32
+    }
     /// Get data block by id
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
@@ -128,6 +142,12 @@ impl EasyFileSystem {
     /// Allocate a new inode
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
+    }
+
+    /// Release an inode only after its names and open handles are gone.
+    pub(crate) fn dealloc_inode(&mut self, inode_id: u32) {
+        self.inode_bitmap
+            .dealloc(&self.block_device, inode_id as usize);
     }
 
     /// Allocate a data block

@@ -1,5 +1,4 @@
-//! Process management syscalls
-//!
+/* Process syscalls include checked, cross-page writes of the current time. */
 use alloc::sync::Arc;
 
 use crate::{
@@ -7,7 +6,7 @@ use crate::{
     mm::{translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, TaskControlBlock,
     },
 };
 
@@ -102,33 +101,35 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     // ---- release current PCB automatically
 }
 
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Write seconds and microseconds through checked user-page translations.
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let us = crate::timer::get_time_us();
+    let mut bytes = [0u8; core::mem::size_of::<TimeVal>()];
+    let word_size = core::mem::size_of::<usize>();
+    bytes[..word_size].copy_from_slice(&(us / 1_000_000).to_ne_bytes());
+    bytes[word_size..].copy_from_slice(&(us % 1_000_000).to_ne_bytes());
+    if super::fs::copy_to_user(current_user_token(), ts as usize, &bytes) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Allocate an anonymous, page-aligned user mapping.
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    let task = current_task().unwrap();
+    let result = task
+        .inner_exclusive_access()
+        .memory_set
+        .mmap(start, len, prot);
+    result
 }
 
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Release a fully mapped user range.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    let task = current_task().unwrap();
+    let result = task.inner_exclusive_access().memory_set.munmap(start, len);
+    result
 }
 
 /// change data segment size
@@ -141,14 +142,30 @@ pub fn sys_sbrk(size: i32) -> isize {
     }
 }
 
-/// YOUR JOB: Implement spawn.
-/// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+/// Create a child directly from an executable inode, without copying parent pages.
+pub fn sys_spawn(path: *const u8) -> isize {
+    let Some(path) = super::fs::user_name(current_user_token(), path) else {
+        return -1;
+    };
+    let Some(executable) = open_file(&path, OpenFlags::RDONLY) else {
+        return -1;
+    };
+    let data = executable.read_all();
+    if data.get(..4) != Some(b"\x7fELF") {
+        return -1;
+    }
+    let parent = current_task().unwrap();
+    let child = Arc::new(TaskControlBlock::new(&data));
+    {
+        let mut parent_inner = parent.inner_exclusive_access();
+        let mut child_inner = child.inner_exclusive_access();
+        child_inner.parent = Some(Arc::downgrade(&parent));
+        child_inner.fd_table = parent_inner.fd_table.clone();
+        parent_inner.children.push(child.clone());
+    }
+    let pid = child.getpid();
+    add_task(child);
+    pid as isize
 }
 
 // YOUR JOB: Set task priority.

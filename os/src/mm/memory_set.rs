@@ -1,4 +1,4 @@
-//! Implementation of [`MapArea`] and [`MemorySet`].
+/* User mappings own their frames; partial unmaps preserve the remaining regions. */
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
@@ -43,6 +43,96 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// Allocate anonymous pages after rejecting invalid ranges and overlaps.
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if prot == 0 || prot & !7 != 0 {
+            return -1;
+        }
+        let Some(range) = user_page_range(start, len) else {
+            return -1;
+        };
+        if range
+            .into_iter()
+            .any(|vpn| self.page_table.translate(vpn).is_some())
+        {
+            return -1;
+        }
+        if len == 0 {
+            return 0;
+        }
+        let permission = MapPermission::from_bits((prot as u8) << 1).unwrap() | MapPermission::U;
+        let flags = PTEFlags::from_bits(permission.bits).unwrap();
+        let mut area = MapArea {
+            vpn_range: range,
+            data_frames: BTreeMap::new(),
+            map_type: MapType::Framed,
+            map_perm: permission,
+        };
+        for vpn in range {
+            if let Some(frame) = frame_alloc() {
+                if self.page_table.try_map(vpn, frame.ppn, flags) {
+                    area.data_frames.insert(vpn, frame);
+                    continue;
+                }
+            }
+            for mapped in area.data_frames.keys() {
+                self.page_table.unmap(*mapped);
+            }
+            return -1;
+        }
+        self.areas.push(area);
+        0
+    }
+
+    /// Unmap only fully mapped user ranges, splitting ownership around any holes.
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let Some(range) = user_page_range(start, len) else {
+            return -1;
+        };
+        for vpn in range {
+            match self.page_table.translate(vpn) {
+                Some(pte) if pte.flags().contains(PTEFlags::U) => {}
+                _ => return -1,
+            }
+        }
+        if len == 0 {
+            return 0;
+        }
+        let start_vpn = range.get_start();
+        let end_vpn = range.get_end();
+        let areas = core::mem::take(&mut self.areas);
+        for mut area in areas {
+            let first = area.vpn_range.get_start();
+            let last = area.vpn_range.get_end();
+            if first == last || last <= start_vpn || end_vpn <= first {
+                self.areas.push(area);
+                continue;
+            }
+            let cut_first = first.max(start_vpn);
+            let cut_last = last.min(end_vpn);
+            let right_frames = area.data_frames.split_off(&cut_last);
+            let removed_frames = area.data_frames.split_off(&cut_first);
+            for vpn in VPNRange::new(cut_first, cut_last) {
+                self.page_table.unmap(vpn);
+            }
+            drop(removed_frames);
+            let map_type = area.map_type;
+            let map_perm = area.map_perm;
+            if first < cut_first {
+                area.vpn_range = VPNRange::new(first, cut_first);
+                self.areas.push(area);
+            }
+            if cut_last < last {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(cut_last, last),
+                    data_frames: right_frames,
+                    map_type,
+                    map_perm,
+                });
+            }
+        }
+        0
+    }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {
@@ -319,6 +409,16 @@ impl MemorySet {
         }
     }
 }
+fn user_page_range(start: usize, len: usize) -> Option<VPNRange> {
+    let end = start.checked_add(len)?;
+    if start % PAGE_SIZE != 0 || start >= 1usize << 38 || end > 1usize << 38 {
+        return None;
+    }
+    let first = VirtAddr::from(start).floor();
+    let pages = len / PAGE_SIZE + usize::from(len % PAGE_SIZE != 0);
+    Some(VPNRange::new(first, VirtPageNum(first.0 + pages)))
+}
+
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
     vpn_range: VPNRange,

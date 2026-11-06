@@ -1,4 +1,7 @@
-//! Process management syscalls
+/*!
+Process syscalls and byte-level tracing for the flat-address-space kernel.
+Assistance: Codex; reference: rCore Guide, chapter 3 exercise.
+*/
 use crate::{
     task::{exit_current_and_run_next, suspend_current_and_run_next},
     timer::get_time_us,
@@ -38,8 +41,18 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     0
 }
 
-// TODO: implement the syscall
-pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
+pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
     trace!("kernel: sys_trace");
-    -1
+    match trace_request {
+        // Chapter 3 deliberately has no user-memory isolation yet.
+        0 => unsafe { core::ptr::read_volatile(id as *const u8) as isize },
+        1 => {
+            unsafe { core::ptr::write_volatile(id as *mut u8, data as u8) };
+            0
+        }
+        2 => super::syscall_slot(id)
+            .map(|slot| crate::task::current_syscall_count(slot) as isize)
+            .unwrap_or(0),
+        _ => -1,
+    }
 }

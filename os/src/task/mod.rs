@@ -1,13 +1,8 @@
-//! Task management implementation
-//!
-//! Everything about task management, like starting and switching tasks is
-//! implemented here.
-//!
-//! A single global instance of [`TaskManager`] called `TASK_MANAGER` controls
-//! all the tasks in the operating system.
-//!
-//! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
-//! might not be what you expect.
+/*!
+Schedule the statically loaded applications and keep syscall counts per task.
+Release task-manager borrows before switching to another kernel stack.
+Assistance: Codex; reference: rCore Guide, chapter 3 exercise.
+*/
 
 mod context;
 mod switch;
@@ -45,6 +40,8 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    /// One counter for each syscall supported by this chapter.
+    syscall_counts: [[usize; 5]; MAX_APP_NUM],
 }
 
 lazy_static! {
@@ -65,6 +62,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counts: [[0; 5]; MAX_APP_NUM],
                 })
             },
         }
@@ -168,4 +166,15 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+pub(crate) fn record_syscall(slot: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.syscall_counts[current][slot] += 1;
+}
+
+pub(crate) fn current_syscall_count(slot: usize) -> usize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.syscall_counts[inner.current_task][slot]
 }

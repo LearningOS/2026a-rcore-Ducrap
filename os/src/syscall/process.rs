@@ -1,5 +1,13 @@
-//! Process management syscalls
-use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next};
+/*
+Implement process syscalls through checked user-address translation.
+Reference: rCore Guide chapter4/7exercise.html.
+*/
+use crate::mm::{copy_to_user, translated_user_byte};
+use crate::task::{
+    change_program_brk, current_user_token, exit_current_and_run_next,
+    suspend_current_and_run_next, with_current_task,
+};
+use crate::timer::get_time_us;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -22,31 +30,49 @@ pub fn sys_yield() -> isize {
     0
 }
 
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!("kernel: sys_get_time");
-    -1
+/// Copy a timestamp without assuming that its fields share a physical page.
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let now = get_time_us();
+    let mut bytes = [0u8; core::mem::size_of::<TimeVal>()];
+    let word = core::mem::size_of::<usize>();
+    bytes[..word].copy_from_slice(&(now / 1_000_000).to_ne_bytes());
+    bytes[word..].copy_from_slice(&(now % 1_000_000).to_ne_bytes());
+    if copy_to_user(current_user_token(), ts as usize, &bytes).is_some() {
+        0
+    } else {
+        -1
+    }
 }
 
-/// TODO: Finish sys_trace to pass testcases
-/// HINT: You might reimplement it with virtual memory management.
-pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
-    trace!("kernel: sys_trace");
-    -1
+/// Inspect one user byte or this task's syscall history.
+pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
+    match trace_request {
+        0 => translated_user_byte(current_user_token(), id, false)
+            .map(|pa| *pa.get_mut::<u8>() as isize)
+            .unwrap_or(-1),
+        1 => match translated_user_byte(current_user_token(), id, true) {
+            Some(pa) => {
+                *pa.get_mut::<u8>() = data as u8;
+                0
+            }
+            None => -1,
+        },
+        2 => with_current_task(|task| {
+            task.syscall_counts
+                .get(id)
+                .map(|count| *count as isize)
+                .unwrap_or(-1)
+        }),
+        _ => -1,
+    }
 }
 
-// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    -1
+pub fn sys_mmap(start: usize, len: usize, prot: usize) -> isize {
+    with_current_task(|task| task.memory_set.mmap(start, len, prot))
 }
 
-// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    with_current_task(|task| task.memory_set.munmap(start, len))
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

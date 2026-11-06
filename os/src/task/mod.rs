@@ -1,13 +1,6 @@
-//! Task management implementation
-//!
-//! Everything about task management, like starting and switching tasks is
-//! implemented here.
-//!
-//! A single global instance of [`TaskManager`] called `TASK_MANAGER` controls
-//! all the tasks in the operating system.
-//!
-//! Be careful when you see `__switch` ASM function in `switch.S`. Control flow around this function
-//! might not be what you expect.
+/*!
+Manage task state and checked access to the running task.
+*/
 
 mod context;
 mod switch;
@@ -191,6 +184,13 @@ pub fn exit_current_and_run_next() {
 /// Get the current 'Running' task's token.
 pub fn current_user_token() -> usize {
     TASK_MANAGER.get_current_token()
+}
+
+/// Access task-owned metadata without retaining a manager borrow across scheduling.
+pub fn with_current_task<R>(f: impl FnOnce(&mut TaskControlBlock) -> R) -> R {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    f(&mut inner.tasks[current])
 }
 
 /// Get the current 'Running' task's trap contexts.

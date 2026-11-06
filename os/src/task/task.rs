@@ -1,6 +1,8 @@
-//! Types related to task management
+/*
+Store task state, address-space ownership, and per-task syscall counters.
+*/
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
@@ -8,6 +10,8 @@ use crate::trap::{trap_handler, TrapContext};
 
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
+    /// Counts include the syscall currently being dispatched.
+    pub syscall_counts: [usize; MAX_SYSCALL_NUM],
     /// Save task context
     pub task_cx: TaskContext,
 
@@ -56,6 +60,7 @@ impl TaskControlBlock {
             MapPermission::R | MapPermission::W,
         );
         let task_control_block = Self {
+            syscall_counts: [0; MAX_SYSCALL_NUM],
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
             memory_set,

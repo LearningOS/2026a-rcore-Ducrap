@@ -1,5 +1,16 @@
 # Lab 2: Address spaces
 
+## What I learned
+
+My rule for a syscall that writes to a user buffer is to check every page the
+buffer spans before writing the first byte. A timestamp can start on a
+writable page and end on an unmapped one. Checking only the starting address
+would let an error leave a half-written timestamp behind.
+
+I also separate the page-table entries from the kernel's record of who owns
+the frames. A partial unmap has to update both. Otherwise a later fork could
+copy region metadata that still describes a page the process already removed.
+
 ## Implementation
 
 The kernel copies `TimeVal` through checked user mappings, including structures
@@ -114,21 +125,8 @@ Evidence is in `tmp/rcore-result.json`, `tmp/rcore-grade.log`, and
 `tmp/last-run.json`. This run does not independently cover every possible
 out-of-memory or partial-unmap/fork interaction beyond the official suite.
 
-## Assistance, references, and honor-code disclosure
+## References and disclosure
 
-This is an AI-assisted local study implementation. OpenAI Codex implemented and
-reviewed the changes and drafted these answers at the user's request. It is not
-a claim that the participant independently wrote the code or personally ran
-unrecorded tests. No peer solution was used.
+The [chapter 4 exercise](https://learningos.cn/rCore-Tutorial-Guide/chapter4/7exercise.html), course framework, and official tests define the lab interfaces. Architecture references appear with the relevant answers.
 
-The implementation follows the [chapter-4 exercise specification](https://learningos.cn/rCore-Tutorial-Guide/chapter4/7exercise.html)
-and the supplied course framework. Official test sources were read to understand
-the interface; test assertions and checker rules were not changed. Architecture
-references are linked next to the corresponding answers and source-file comments
-identify the guide used for syscall semantics.
-
-Under the [course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html),
-assistance and reference use must be disclosed, third-party solutions must not be
-copied, and experiment code must be kept private rather than passed to later
-students. The changes implement the lab interfaces. The checks above were run locally.
-The guide does not specify how AI-generated work is assessed.
+Codex implemented the lab, ran the recorded checks, and drafted this report. No other student's solution was used. [Course honor code](https://learningos.cn/rCore-Tutorial-Guide/honorcode.html).

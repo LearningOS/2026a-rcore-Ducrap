@@ -1,4 +1,7 @@
-//! Types related to task management & Functions for completely changing TCB
+/*
+Create independent child address spaces and keep per-process stride state.
+Reference: rCore Guide chapter5/4exercise.html (spawn and stride).
+*/
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
@@ -8,6 +11,10 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+
+pub const DEFAULT_PRIORITY: usize = 16;
+// u128 keeps accumulation practical while preserving a nonzero pass for every legal priority.
+pub const BIG_STRIDE: u128 = 1u128 << 64;
 
 /// Task control block structure
 ///
@@ -37,6 +44,8 @@ impl TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
+    pub priority: usize,
+    pub stride: u128,
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
 
@@ -108,6 +117,8 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    priority: DEFAULT_PRIORITY,
+                    stride: 0,
                     trap_cx_ppn,
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -150,6 +161,8 @@ impl TaskControlBlock {
         inner.trap_cx_ppn = trap_cx_ppn;
         // initialize base_size
         inner.base_size = user_sp;
+        inner.heap_bottom = user_sp;
+        inner.program_brk = user_sp;
         // initialize trap_cx
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
@@ -181,6 +194,8 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    priority: DEFAULT_PRIORITY,
+                    stride: 0,
                     trap_cx_ppn,
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -209,6 +224,16 @@ impl TaskControlBlock {
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    /// Build directly from the requested ELF instead of copying the parent's pages.
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let child = Arc::new(Self::new(elf_data));
+        child.inner_exclusive_access().parent = Some(Arc::downgrade(self));
+        self.inner_exclusive_access()
+            .children
+            .push(Arc::clone(&child));
+        child
     }
 
     /// change the location of the program break. return None if failed.

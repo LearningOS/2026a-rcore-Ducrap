@@ -1,4 +1,7 @@
-//! Implementation of [`PageTableEntry`] and [`PageTable`].
+/*
+Translate user addresses with explicit access checks before kernel copies.
+Reference: rCore Guide chapter4/7exercise.html (virtual-memory syscalls).
+*/
 use super::{frame_alloc, FrameTracker, PhysAddr, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::string::String;
 use alloc::vec;
@@ -99,7 +102,7 @@ impl PageTable {
                 break;
             }
             if !pte.is_valid() {
-                let frame = frame_alloc().unwrap();
+                let frame = frame_alloc()?;
                 *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
                 self.frames.push(frame);
             }
@@ -132,6 +135,17 @@ impl PageTable {
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
+    /// Map a page without panicking when an intermediate table cannot be allocated.
+    pub fn try_map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> bool {
+        let Some(pte) = self.find_pte_create(vpn) else {
+            return false;
+        };
+        if pte.is_valid() {
+            return false;
+        }
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        true
+    }
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]
     pub fn unmap(&mut self, vpn: VirtPageNum) {
@@ -141,7 +155,9 @@ impl PageTable {
     }
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-        self.find_pte(vpn).map(|pte| *pte)
+        self.find_pte(vpn)
+            .map(|pte| *pte)
+            .filter(|pte| pte.is_valid())
     }
     /// get the physical address from the virtual address
     pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
@@ -158,6 +174,52 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+}
+
+/// Translate one canonical, user-visible byte with the requested access permission.
+pub fn translated_user_byte(token: usize, address: usize, write: bool) -> Option<super::PhysAddr> {
+    let va = VirtAddr::from(address);
+    if usize::from(va) != address {
+        return None;
+    }
+    let pte = PageTable::from_token(token).translate(va.floor())?;
+    // RISC-V reserves W=1, R=0; such entries do not expose a usable user page.
+    if pte.writable() && !pte.readable() {
+        return None;
+    }
+    if !pte.flags().contains(PTEFlags::U)
+        || if write {
+            !pte.writable()
+        } else {
+            !pte.readable()
+        }
+    {
+        return None;
+    }
+    Some(super::PhysAddr::from(
+        (pte.ppn().0 << 12) + va.page_offset(),
+    ))
+}
+
+/// Validate the entire destination before copying, including a final partial page.
+pub fn copy_to_user(token: usize, address: usize, data: &[u8]) -> Option<()> {
+    let end = address.checked_add(data.len())?;
+    let mut cursor = address;
+    while cursor < end {
+        translated_user_byte(token, cursor, true)?;
+        cursor += (crate::config::PAGE_SIZE - cursor % crate::config::PAGE_SIZE).min(end - cursor);
+    }
+    let mut copied = 0;
+    while copied < data.len() {
+        let cursor = address + copied;
+        let pa = translated_user_byte(token, cursor, true)?;
+        let count = (crate::config::PAGE_SIZE - pa.page_offset()).min(data.len() - copied);
+        let frame = pa.floor().get_bytes_array();
+        frame[pa.page_offset()..pa.page_offset() + count]
+            .copy_from_slice(&data[copied..copied + count]);
+        copied += count;
+    }
+    Some(())
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table

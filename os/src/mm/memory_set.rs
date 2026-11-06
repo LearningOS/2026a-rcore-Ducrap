@@ -1,4 +1,7 @@
-//! Implementation of [`MapArea`] and [`MemorySet`].
+/*
+Own address-space regions and validate anonymous map/unmap requests.
+Reference: rCore Guide chapter4/7exercise.html (mmap and munmap).
+*/
 use super::{frame_alloc, FrameTracker};
 use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
@@ -44,6 +47,100 @@ impl MemorySet {
             areas: Vec::new(),
         }
     }
+
+    /// Eager anonymous mapping; reject every overlap before allocating data frames.
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize {
+        if prot == 0 || prot & !7 != 0 {
+            return -1;
+        }
+        let Some(range) = user_page_range(start, len) else {
+            return -1;
+        };
+        if range
+            .into_iter()
+            .any(|vpn| self.page_table.translate(vpn).is_some())
+        {
+            return -1;
+        }
+        if len == 0 {
+            return 0;
+        }
+        let permission = MapPermission::from_bits((prot as u8) << 1).unwrap() | MapPermission::U;
+        let flags = PTEFlags::from_bits(permission.bits).unwrap();
+        let mut area = MapArea {
+            vpn_range: range,
+            data_frames: BTreeMap::new(),
+            map_type: MapType::Framed,
+            map_perm: permission,
+        };
+        for vpn in range {
+            let frame = frame_alloc();
+            if let Some(frame) = frame {
+                if self.page_table.try_map(vpn, frame.ppn, flags) {
+                    area.data_frames.insert(vpn, frame);
+                    continue;
+                }
+            }
+            // Roll back installed leaf entries before owned frames are released.
+            for mapped in area.data_frames.keys() {
+                self.page_table.unmap(*mapped);
+            }
+            return -1;
+        }
+        self.areas.push(area);
+        0
+    }
+
+    /// Remove a page range, splitting area ownership so fork cannot recreate holes.
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let Some(range) = user_page_range(start, len) else {
+            return -1;
+        };
+        for vpn in range {
+            match self.page_table.translate(vpn) {
+                Some(pte) if pte.flags().contains(PTEFlags::U) => {}
+                _ => return -1,
+            }
+        }
+        if len == 0 {
+            return 0;
+        }
+        let start_vpn = range.get_start();
+        let end_vpn = range.get_end();
+        let areas = core::mem::take(&mut self.areas);
+        for mut area in areas {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            if area_start == area_end || area_end <= start_vpn || end_vpn <= area_start {
+                self.areas.push(area);
+                continue;
+            }
+            let cut_start = area_start.max(start_vpn);
+            let cut_end = area_end.min(end_vpn);
+            let right_frames = area.data_frames.split_off(&cut_end);
+            let removed_frames = area.data_frames.split_off(&cut_start);
+            for vpn in VPNRange::new(cut_start, cut_end) {
+                self.page_table.unmap(vpn);
+            }
+            drop(removed_frames);
+            let map_type = area.map_type;
+            let map_perm = area.map_perm;
+            if area_start < cut_start {
+                area.vpn_range = VPNRange::new(area_start, cut_start);
+                self.areas.push(area);
+            }
+            if cut_end < area_end {
+                self.areas.push(MapArea {
+                    vpn_range: VPNRange::new(cut_end, area_end),
+                    data_frames: right_frames,
+                    map_type,
+                    map_perm,
+                });
+            }
+        }
+        0
+    }
+
     /// Get the page table token
     pub fn token(&self) -> usize {
         self.page_table.token()
@@ -301,6 +398,25 @@ impl MemorySet {
         }
     }
 }
+
+/// Validate alignment, arithmetic, and canonical Sv39 addresses without truncation.
+fn user_page_range(start: usize, len: usize) -> Option<VPNRange> {
+    if start % PAGE_SIZE != 0 || usize::from(VirtAddr::from(start)) != start {
+        return None;
+    }
+    let end = start.checked_add(len)?;
+    if len != 0 && usize::from(VirtAddr::from(end - 1)) != end - 1 {
+        return None;
+    }
+    let first = VirtAddr::from(start).floor();
+    let pages = len / PAGE_SIZE + usize::from(len % PAGE_SIZE != 0);
+    let last = first.0.checked_add(pages)?;
+    if last > 1 << 27 {
+        return None;
+    }
+    Some(VPNRange::new(first, VirtPageNum(last)))
+}
+
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
     vpn_range: VPNRange,

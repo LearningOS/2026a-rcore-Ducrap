@@ -1,3 +1,5 @@
+/* Manage tasks and retire exited threads from deadlock accounting. */
+
 //! Implementation of process [`ProcessControlBlock`] and task(thread) [`TaskControlBlock`] management mechanism
 //!
 //! Here is the entry for task scheduling required by other modules
@@ -89,6 +91,11 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     drop(task_inner);
 
     // Move the task to stop-wait status, to avoid kernel stack from being freed
+    {
+        let mut inner = process.inner_exclusive_access();
+        inner.mutex_resources.remove_thread(tid);
+        inner.semaphore_resources.remove_thread(tid);
+    }
     if tid == 0 {
         add_stopping_task(task);
     } else {

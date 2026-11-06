@@ -1,3 +1,5 @@
+/* Create threads and reset resource accounting when a recycled TID is assigned. */
+
 use crate::{
     mm::kernel_token,
     task::{add_task, current_task, TaskControlBlock},
@@ -41,6 +43,8 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
         tasks.push(None);
     }
     tasks[new_task_tid] = Some(Arc::clone(&new_task));
+    process_inner.mutex_resources.reset_thread(new_task_tid);
+    process_inner.semaphore_resources.reset_thread(new_task_tid);
     let new_task_trap_cx = new_task_inner.get_trap_cx();
     *new_task_trap_cx = TrapContext::app_init_context(
         entry,

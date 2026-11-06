@@ -1,6 +1,11 @@
+/* Process syscalls, including a checked page-spanning gettimeofday result. */
+
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{
+        translated_byte_buffer, translated_ref, translated_refmut, translated_str, PageTable,
+        VirtAddr,
+    },
     task::{
         current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
         suspend_current_and_run_next, SignalFlags,
@@ -147,16 +152,45 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 }
 
 /// get_time syscall
-///
-/// YOUR JOB: get time with second and microsecond
-/// HINT: You might reimplement it with virtual memory management.
-/// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().process.upgrade().unwrap().getpid()
-    );
-    -1
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    let start = ts as usize;
+    let len = core::mem::size_of::<TimeVal>();
+    let Some(end) = start.checked_add(len) else {
+        return -1;
+    };
+    if start == 0 || end > (1usize << 38) {
+        return -1;
+    }
+    let token = current_user_token();
+    let table = PageTable::from_token(token);
+    let mut address = start;
+    while address < end {
+        let va = VirtAddr::from(address);
+        let Some(pte) = table.translate(va.floor()) else {
+            return -1;
+        };
+        if !pte.is_valid() || !pte.writable() || pte.flags().bits() & (1 << 4) == 0 {
+            return -1;
+        }
+        address += (crate::config::PAGE_SIZE - va.page_offset()).min(end - address);
+    }
+    let us = crate::timer::get_time_us();
+    let values = [us / 1_000_000, us % 1_000_000];
+    let mut bytes = [0u8; core::mem::size_of::<TimeVal>()];
+    for (destination, value) in bytes
+        .chunks_exact_mut(core::mem::size_of::<usize>())
+        .zip(values)
+    {
+        destination.copy_from_slice(&value.to_ne_bytes());
+    }
+    // Validate the complete range before modifying any page; physical pages need
+    // not be adjacent even though this user structure is contiguous.
+    let mut copied = 0;
+    for buffer in translated_byte_buffer(token, ts as *const u8, len) {
+        buffer.copy_from_slice(&bytes[copied..copied + buffer.len()]);
+        copied += buffer.len();
+    }
+    0
 }
 
 /// mmap syscall
